@@ -6,17 +6,17 @@ import (
 	"path/filepath"
 
 	"github.com/rs/zerolog"
-	"github.com/varoOP/shinkrodb/internal/config"
-	"github.com/varoOP/shinkrodb/internal/database"
-	"github.com/varoOP/shinkrodb/internal/dedupe"
-	"github.com/varoOP/shinkrodb/internal/domain"
-	"github.com/varoOP/shinkrodb/internal/format"
-	"github.com/varoOP/shinkrodb/internal/logger"
-	"github.com/varoOP/shinkrodb/internal/mal"
-	"github.com/varoOP/shinkrodb/internal/notification"
-	"github.com/varoOP/shinkrodb/internal/repository"
-	"github.com/varoOP/shinkrodb/internal/tmdb"
-	"github.com/varoOP/shinkrodb/internal/tvdb"
+	"github.com/shinkro/shinkrodb/internal/config"
+	"github.com/shinkro/shinkrodb/internal/database"
+	"github.com/shinkro/shinkrodb/internal/dedupe"
+	"github.com/shinkro/shinkrodb/internal/domain"
+	"github.com/shinkro/shinkrodb/internal/format"
+	"github.com/shinkro/shinkrodb/internal/logger"
+	"github.com/shinkro/shinkrodb/internal/mal"
+	"github.com/shinkro/shinkrodb/internal/notification"
+	"github.com/shinkro/shinkrodb/internal/repository"
+	"github.com/shinkro/shinkrodb/internal/tmdb"
+	"github.com/shinkro/shinkrodb/internal/tvdb"
 )
 
 // App represents the main application with all dependencies initialized

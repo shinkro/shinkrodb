@@ -10,8 +10,8 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog"
-	"github.com/varoOP/shinkrodb/internal/database"
-	"github.com/varoOP/shinkrodb/internal/domain"
+	"github.com/shinkro/shinkrodb/internal/database"
+	"github.com/shinkro/shinkrodb/internal/domain"
 	"golang.org/x/net/html"
 )
 

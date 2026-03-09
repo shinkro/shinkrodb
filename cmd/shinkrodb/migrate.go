@@ -6,13 +6,13 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	"github.com/varoOP/shinkrodb/internal/cache"
-	"github.com/varoOP/shinkrodb/internal/config"
-	"github.com/varoOP/shinkrodb/internal/database"
-	"github.com/varoOP/shinkrodb/internal/domain"
-	"github.com/varoOP/shinkrodb/internal/logger"
-	"github.com/varoOP/shinkrodb/internal/mal"
-	"github.com/varoOP/shinkrodb/internal/repository"
+	"github.com/shinkro/shinkrodb/internal/cache"
+	"github.com/shinkro/shinkrodb/internal/config"
+	"github.com/shinkro/shinkrodb/internal/database"
+	"github.com/shinkro/shinkrodb/internal/domain"
+	"github.com/shinkro/shinkrodb/internal/logger"
+	"github.com/shinkro/shinkrodb/internal/mal"
+	"github.com/shinkro/shinkrodb/internal/repository"
 )
 
 var migrateCmd = &cobra.Command{

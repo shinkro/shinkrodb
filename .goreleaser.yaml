@@ -66,4 +66,4 @@ changelog:
 release:
   prerelease: auto
   footer: |
-    **Full Changelog**: https://github.com/varoOP/shinkrodb/compare/{{ .PreviousTag }}...{{ .Tag }}
+    **Full Changelog**: https://github.com/shinkro/shinkrodb/compare/{{ .PreviousTag }}...{{ .Tag }}

@@ -7,7 +7,7 @@ import (
 	sq "github.com/Masterminds/squirrel"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog"
-	"github.com/varoOP/shinkrodb/internal/domain"
+	"github.com/shinkro/shinkrodb/internal/domain"
 )
 
 // CacheRepo implements domain.CacheRepo interface

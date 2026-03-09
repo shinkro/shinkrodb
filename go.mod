@@ -1,4 +1,4 @@
-module github.com/varoOP/shinkrodb
+module github.com/shinkro/shinkrodb
 
 go 1.25.5
 
