@@ -13,8 +13,8 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog"
-	"github.com/varoOP/shinkrodb/internal/domain"
-	"github.com/varoOP/shinkrodb/pkg/animelist"
+	"github.com/shinkro/shinkrodb/internal/domain"
+	"github.com/shinkro/shinkrodb/pkg/animelist"
 )
 
 type Service interface {

@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/rs/zerolog"
-	"github.com/varoOP/shinkrodb/internal/domain"
+	"github.com/shinkro/shinkrodb/internal/domain"
 )
 
 // Service is a composite notification service that can send notifications

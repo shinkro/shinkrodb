@@ -15,7 +15,7 @@ import (
 	"github.com/gocolly/colly/extensions"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog"
-	"github.com/varoOP/shinkrodb/internal/domain"
+	"github.com/shinkro/shinkrodb/internal/domain"
 )
 
 type Service interface {

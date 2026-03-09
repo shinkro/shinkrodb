@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"github.com/rs/zerolog"
-	"github.com/varoOP/shinkrodb/internal/domain"
+	"github.com/shinkro/shinkrodb/internal/domain"
 	"gopkg.in/yaml.v3"
 )
 

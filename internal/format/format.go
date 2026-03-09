@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/varoOP/shinkrodb/internal/domain"
+	"github.com/shinkro/shinkrodb/internal/domain"
 )
 
 func FormatTMDB(rootPath string, mappingRepo domain.MappingRepository) error {

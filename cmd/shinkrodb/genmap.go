@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	"github.com/varoOP/shinkrodb/internal/app"
+	"github.com/shinkro/shinkrodb/internal/app"
 )
 
 var genmapCmd = &cobra.Command{
