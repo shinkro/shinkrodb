@@ -105,7 +105,8 @@ func (a *App) Run(rootPath string) (err error) {
 	cacheRepo := database.NewCacheRepo(a.log, db)
 
 	// Get MAL IDs and update mal_cache
-	if err := a.malService.GetAnimeIDs(ctx, cacheRepo); err != nil {
+	preservedMALIDs, err := a.malService.GetAnimeIDs(ctx, cacheRepo)
+	if err != nil {
 		return fmt.Errorf("failed to get MAL IDs: %w", err)
 	}
 
@@ -143,9 +144,10 @@ func (a *App) Run(rootPath string) (err error) {
 	}
 
 	// Calculate and log final statistics
-	stats := calculateStatistics(deduped, dupeCount)
+	stats := calculateStatistics(deduped, dupeCount, preservedMALIDs)
 	a.log.Info().
 		Int("total_mal_ids", stats.TotalMALIDs).
+		Int("preserved_mal_ids", stats.PreservedMALIDs).
 		Int("mal_ids_with_anidb", stats.MALIDsWithAniDB).
 		Int("mal_ids_without_anidb", stats.TotalMALIDs-stats.MALIDsWithAniDB).
 		Int("total_movies", stats.TotalMovies).
@@ -168,10 +170,11 @@ func (a *App) Run(rootPath string) (err error) {
 }
 
 // calculateStatistics calculates comprehensive statistics from the final anime list
-func calculateStatistics(animeList []domain.Anime, dupeCount int) domain.Statistics {
+func calculateStatistics(animeList []domain.Anime, dupeCount, preservedMALIDs int) domain.Statistics {
 	stats := domain.Statistics{
-		TotalMALIDs: len(animeList),
-		DupeCount:   dupeCount,
+		TotalMALIDs:     len(animeList),
+		DupeCount:       dupeCount,
+		PreservedMALIDs: preservedMALIDs,
 	}
 
 	for _, anime := range animeList {

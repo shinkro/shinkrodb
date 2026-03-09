@@ -22,6 +22,7 @@ type Statistics struct {
 	AniDBCoveragePercent  float64
 	TMDBCoveragePercent   float64
 	TVDBCoveragePercent   float64
-	DupeCount            int
+	DupeCount             int
+	PreservedMALIDs       int
 }
 
