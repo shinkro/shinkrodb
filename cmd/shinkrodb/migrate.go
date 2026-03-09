@@ -61,7 +61,7 @@ After migration, you can use the new efficient cache system.`,
 
 			// Fetch MAL IDs first (needed for release dates/types in migration)
 			malSvc := mal.NewService(log, cfg, animeRepo, paths.MalIDPath, paths.AniDBPath)
-			if err := malSvc.GetAnimeIDs(cmd.Context(), cacheRepo); err != nil {
+			if _, err := malSvc.GetAnimeIDs(cmd.Context(), cacheRepo); err != nil {
 				return fmt.Errorf("failed to get MAL IDs: %w", err)
 			}
 		}

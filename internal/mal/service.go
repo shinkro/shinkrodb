@@ -19,7 +19,7 @@ import (
 )
 
 type Service interface {
-	GetAnimeIDs(ctx context.Context, cacheRepo domain.CacheRepo) error
+	GetAnimeIDs(ctx context.Context, cacheRepo domain.CacheRepo) (int, error)
 	ScrapeAniDBIDs(ctx context.Context, cacheRepo domain.CacheRepo) error
 }
 
@@ -80,7 +80,7 @@ func NewService(log zerolog.Logger, config *domain.Config, animeRepo domain.Anim
 	}
 }
 
-func (s *service) GetAnimeIDs(ctx context.Context, cacheRepo domain.CacheRepo) error {
+func (s *service) GetAnimeIDs(ctx context.Context, cacheRepo domain.CacheRepo) (int, error) {
 	s.log.Info().Msg("Getting current ids from myanimelist..")
 	c := &http.Client{
 		Transport: &clientIDTransport{ClientID: s.config.MalClientID},
@@ -89,17 +89,38 @@ func (s *service) GetAnimeIDs(ctx context.Context, cacheRepo domain.CacheRepo) e
 	a := []domain.Anime{}
 	next, err := s.storeAnimeID(ctx, c, "https://api.myanimelist.net/v2/anime/ranking?ranking_type=all&limit=500&fields={media_type,start_date,alternative_titles}", &a)
 	if err != nil {
-		return errors.Wrap(err, "failed to fetch initial MAL IDs")
+		return 0, errors.Wrap(err, "failed to fetch initial MAL IDs")
 	}
 
 	for {
 		if next != "" {
 			next, err = s.storeAnimeID(ctx, c, next, &a)
 			if err != nil {
-				return errors.Wrap(err, "failed to fetch MAL IDs")
+				return 0, errors.Wrap(err, "failed to fetch MAL IDs")
 			}
 		} else {
 			break
+		}
+	}
+
+	// Merge with existing malid.json to preserve any IDs the API may have omitted.
+	// The MAL ranking API sometimes silently excludes entries, which would cause
+	// previously known IDs to disappear from all downstream files.
+	preserved := 0
+	existing, err := s.animeRepo.Get(ctx, s.malIDPath)
+	if err == nil && len(existing) > 0 {
+		newIDs := make(map[int]bool, len(a))
+		for _, anime := range a {
+			newIDs[anime.MalID] = true
+		}
+		for _, anime := range existing {
+			if !newIDs[anime.MalID] {
+				a = append(a, anime)
+				preserved++
+			}
+		}
+		if preserved > 0 {
+			s.log.Warn().Int("count", preserved).Msg("Preserved MAL IDs missing from API response")
 		}
 	}
 
@@ -119,11 +140,11 @@ func (s *service) GetAnimeIDs(ctx context.Context, cacheRepo domain.CacheRepo) e
 	}
 
 	if err := s.animeRepo.Store(ctx, s.malIDPath, a); err != nil {
-		return errors.Wrap(err, "failed to store MAL IDs")
+		return 0, errors.Wrap(err, "failed to store MAL IDs")
 	}
 	s.log.Info().Str("path", string(s.malIDPath)).Msg("Stored malids")
 
-	return nil
+	return preserved, nil
 }
 
 func (s *service) storeAnimeID(ctx context.Context, c *http.Client, url string, a *[]domain.Anime) (string, error) {
