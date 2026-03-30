@@ -75,6 +75,13 @@ func NewApp() (*App, error) {
 
 // Run executes the full database update process
 func (a *App) Run(rootPath string) (err error) {
+	if a.config.MalClientID == "" {
+		return fmt.Errorf("mal_client_id is required (set via config.toml or SHINKRODB_MAL_CLIENT_ID environment variable)")
+	}
+	if a.config.TmdbApiKey == "" {
+		return fmt.Errorf("tmdb_api_key is required (set via config.toml or SHINKRODB_TMDB_API_KEY environment variable)")
+	}
+
 	ctx := context.Background()
 	
 	// Send error notification if run fails

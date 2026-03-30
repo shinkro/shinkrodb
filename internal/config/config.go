@@ -48,14 +48,6 @@ func Load() (*domain.Config, error) {
 		}
 	}
 
-	// Validate required fields
-	if cfg.MalClientID == "" {
-		return nil, fmt.Errorf("mal_client_id is required (set via config.toml or SHINKRODB_MAL_CLIENT_ID environment variable)")
-	}
-	if cfg.TmdbApiKey == "" {
-		return nil, fmt.Errorf("tmdb_api_key is required (set via config.toml or SHINKRODB_TMDB_API_KEY environment variable)")
-	}
-
 	return cfg, nil
 }
 
