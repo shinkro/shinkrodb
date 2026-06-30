@@ -285,8 +285,8 @@ func (s *service) ScrapeAniDBIDs(ctx context.Context, cacheRepo domain.CacheRepo
 
 	// Since to_scrape count is expected to be low, use higher parallelism and lower delays
 	cc.Limit(&colly.LimitRule{
-		RandomDelay: 1 * time.Second,
-		Delay:       1 * time.Second,
+		RandomDelay: 100 * time.Millisecond,
+		Delay:       100 * time.Millisecond,
 		Parallelism: 30,
 		DomainGlob:  "*myanimelist*",
 	})
