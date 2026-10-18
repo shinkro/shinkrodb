@@ -74,6 +74,8 @@ This is a reconciled catalogue of discovered IDs, not a guarantee that rankings 
 
 TMDB title searches require a unique matching title and complete release date. Ambiguous results, partial dates, and searches with unexamined pages remain unmapped. Positive cached links are reused; use `--tmdb=all` to recheck existing links. This stricter matching does not retroactively verify old cache entries.
 
+When exactly one TV entry and one ONA entry share an AniDB ID, a unique match to AniDB's main title, with the TV title extending the ONA title, can establish that the ONA owns the link. In that case the TV entry remains in the runtime catalogue with its shared AniDB link and derived TVDB link cleared, preventing shorts from taking over the main series lookup. Only whitespace and case are normalized for this check; the existing TV season selector is unchanged. The complete intermediate catalogue retains the provider links and community mappings retain their rules. Failure to fetch canonical titles stops a run containing these mixed pairs.
+
 Import and cache failures return errors. Malformed mapping files are not recreated as empty masters, and output files are replaced only after a complete write. These replacements are atomic per file, not a transaction across an entire multi-file batch.
 
 ## Tests

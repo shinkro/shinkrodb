@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
+	"unicode"
 
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog"
@@ -35,7 +37,11 @@ func (s *service) CheckDupes(ctx context.Context, anime []domain.Anime) (int, []
 	// Build map: AniDB ID -> []indices for O(1) duplicate detection
 	// Only consider entries with AniDB ID and type "tv"
 	anidbToIndices := make(map[int][]int)
+	allIndices := make(map[int][]int)
 	for i, a := range anime {
+		if a.AnidbID > 0 {
+			allIndices[a.AnidbID] = append(allIndices[a.AnidbID], i)
+		}
 		if a.AnidbID > 0 && a.Type == "tv" {
 			anidbToIndices[a.AnidbID] = append(anidbToIndices[a.AnidbID], i)
 		}
@@ -53,12 +59,34 @@ func (s *service) CheckDupes(ctx context.Context, anime []domain.Anime) (int, []
 		}
 	}
 
-	if len(duplicateAnidbIDs) == 0 {
+	// A TV short can share the main ONA's AniDB link on MAL. Shinkro
+	// prefers the TV row, so a proven canonical ONA must retain sole ownership.
+	mixedPairs := make(map[int][2]int) // AniDB ID -> [ONA index, TV index]
+	for id, indices := range allIndices {
+		if len(indices) != 2 {
+			continue
+		}
+		a, b := indices[0], indices[1]
+		if anime[a].Type == "tv" {
+			a, b = b, a
+		}
+		if anime[a].Type == "ona" && anime[b].Type == "tv" {
+			mixedPairs[id] = [2]int{a, b}
+			if _, ok := s.aidTitleMap[id]; !ok {
+				s.aidTitleMap[id] = ""
+			}
+		}
+	}
+
+	if len(duplicateAnidbIDs) == 0 && len(mixedPairs) == 0 {
 		return 0, anime, nil
 	}
 
 	// Fill title map for all duplicate AniDB IDs
 	if err := s.fillAidTitleMap(ctx); err != nil {
+		if len(mixedPairs) > 0 {
+			return 0, nil, errors.Wrap(err, "cannot verify mixed TV/ONA AniDB targets")
+		}
 		s.log.Warn().Err(err).Msg("failed to fill AniDB title map")
 		// Continue with empty titles - will keep all entries
 	}
@@ -88,8 +116,25 @@ func (s *service) CheckDupes(ctx context.Context, anime []domain.Anime) (int, []
 		}
 	}
 
+	// Copy before clearing links: intermediate catalogues retain raw provider
+	// associations. TVDB IDs here are derived from AniDB, so clear that link too;
+	// explicit community season/episode rules remain in the mapping masters.
+	runtime := append([]domain.Anime(nil), anime...)
+	correctedPairs := 0
+	for id, pair := range mixedPairs {
+		mainTitle := compactTitle(s.aidTitleMap[id])
+		onaTitle, tvTitle := compactTitle(anime[pair[0]].MainTitle), compactTitle(anime[pair[1]].MainTitle)
+		if mainTitle == "" || mainTitle != onaTitle || tvTitle == onaTitle || !strings.HasPrefix(tvTitle, onaTitle) {
+			continue
+		}
+		runtime[pair[1]].AnidbID = 0
+		runtime[pair[1]].TvdbID = 0
+		correctedPairs++
+		s.log.Info().Int("anidb_id", id).Int("canonical_mal_id", anime[pair[0]].MalID).Int("tv_mal_id", anime[pair[1]].MalID).Msg("Kept canonical ONA target; cleared shared TV cross-reference")
+	}
+
 	if len(indicesToRemove) == 0 {
-		return len(duplicateAnidbIDs), anime, nil
+		return len(duplicateAnidbIDs) + correctedPairs, runtime, nil
 	}
 
 	s.log.Info().
@@ -99,15 +144,14 @@ func (s *service) CheckDupes(ctx context.Context, anime []domain.Anime) (int, []
 
 	// Remove entries in reverse order to maintain correct indices
 	deduped := make([]domain.Anime, 0, len(anime)-len(indicesToRemove))
-	for i := range anime {
+	for i := range runtime {
 		if !indicesToRemove[i] {
-			deduped = append(deduped, anime[i])
+			deduped = append(deduped, runtime[i])
 		}
 	}
 
-	return len(duplicateAnidbIDs), deduped, nil
+	return len(duplicateAnidbIDs) + correctedPairs, deduped, nil
 }
-
 
 func (s *service) fillAidTitleMap(ctx context.Context) error {
 	anidb := &Animetitles{}
@@ -116,7 +160,7 @@ func (s *service) fillAidTitleMap(ctx context.Context) error {
 		return errors.Wrap(err, "failed to create request")
 	}
 
-	client := &http.Client{}
+	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return errors.Wrap(err, "failed to fetch animetitles.xml")
@@ -173,4 +217,14 @@ type Animetitles struct {
 			Lang string `xml:"lang,attr"`
 		} `xml:"title"`
 	} `xml:"anime"`
+}
+
+// MAL and AniDB sometimes differ only in romanized word boundaries.
+func compactTitle(title string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return -1
+		}
+		return unicode.ToLower(r)
+	}, title)
 }
