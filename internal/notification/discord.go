@@ -75,7 +75,7 @@ func (s *DiscordService) buildSuccessFields(stats domain.Statistics) []discordFi
 			Inline: false,
 		},
 		{
-			Name:   "Duplicates Removed",
+			Name:   "AniDB Duplicate Groups",
 			Value:  fmt.Sprintf("%d", stats.DupeCount),
 			Inline: true,
 		},

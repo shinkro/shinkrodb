@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -61,6 +62,9 @@ func (r *FileRepository) Get(ctx context.Context, path domain.AnimePath) ([]doma
 	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal json from %s: %w", path, err)
 	}
+	if a == nil {
+		return nil, fmt.Errorf("catalogue %s must contain a JSON array", path)
+	}
 
 	return a, nil
 }
@@ -72,21 +76,8 @@ func (r *FileRepository) Store(ctx context.Context, path domain.AnimePath, anime
 		return fmt.Errorf("failed to marshal anime data: %w", err)
 	}
 
-	// Ensure directory exists
-	dir := filepath.Dir(string(path))
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create directory %s: %w", dir, err)
-	}
-
-	f, err := os.Create(string(path))
-	if err != nil {
-		return fmt.Errorf("failed to create file %s: %w", path, err)
-	}
-	defer f.Close()
-
-	_, err = f.Write(j)
-	if err != nil {
-		return fmt.Errorf("failed to write to file %s: %w", path, err)
+	if err := writeFile(ctx, string(path), j); err != nil {
+		return err
 	}
 
 	r.log.Debug().Str("path", string(path)).Int("count", len(anime)).Msg("stored anime data")
@@ -107,9 +98,12 @@ func (r *FileRepository) GetTMDBMaster(ctx context.Context, path string) (*domai
 		return nil, fmt.Errorf("failed to read file: %w", err)
 	}
 
-	err = yaml.Unmarshal(b, am)
+	err = decodeMapping(b, am)
 	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal yaml: %w", err)
+	}
+	if am.AnimeMovie == nil {
+		return nil, fmt.Errorf("missing or null animeMovies list in %s", path)
 	}
 
 	return am, nil
@@ -122,17 +116,6 @@ func (r *FileRepository) StoreTMDBMaster(ctx context.Context, path string, movie
 		return fmt.Errorf("failed to marshal yaml: %w", err)
 	}
 
-	// Ensure directory exists
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create directory %s: %w", dir, err)
-	}
-
-	f, err := os.Create(path)
-	if err != nil {
-		return fmt.Errorf("failed to create file: %w", err)
-	}
-
 	text := string(b)
 	lines := strings.Split(text, "\n")
 	for i, line := range lines {
@@ -142,10 +125,8 @@ func (r *FileRepository) StoreTMDBMaster(ctx context.Context, path string, movie
 	}
 
 	modifiedText := strings.Join(lines, "\n")
-	defer f.Close()
-	_, err = f.Write([]byte(modifiedText))
-	if err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
+	if err := writeFile(ctx, path, []byte(modifiedText)); err != nil {
+		return err
 	}
 
 	r.log.Debug().Str("path", path).Msg("stored TMDB master")
@@ -166,9 +147,12 @@ func (r *FileRepository) GetTVDBMaster(ctx context.Context, path string) (*domai
 		return nil, fmt.Errorf("failed to read file: %w", err)
 	}
 
-	err = yaml.Unmarshal(b, am)
+	err = decodeMapping(b, am)
 	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal yaml: %w", err)
+	}
+	if am.Anime == nil {
+		return nil, fmt.Errorf("missing or null AnimeMap list in %s", path)
 	}
 
 	return am, nil
@@ -179,17 +163,6 @@ func (r *FileRepository) StoreTVDBMaster(ctx context.Context, path string, map_ 
 	b, err := yaml.Marshal(map_)
 	if err != nil {
 		return fmt.Errorf("failed to marshal yaml: %w", err)
-	}
-
-	// Ensure directory exists
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create directory %s: %w", dir, err)
-	}
-
-	f, err := os.Create(path)
-	if err != nil {
-		return fmt.Errorf("failed to create file: %w", err)
 	}
 
 	text := string(b)
@@ -206,13 +179,62 @@ func (r *FileRepository) StoreTVDBMaster(ctx context.Context, path string, map_ 
 	}
 
 	modifiedText := strings.Join(lines, "\n")
-	defer f.Close()
-	_, err = f.Write([]byte(modifiedText))
-	if err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
+	if err := writeFile(ctx, path, []byte(modifiedText)); err != nil {
+		return err
 	}
 
 	r.log.Debug().Str("path", path).Msg("stored TVDB master")
 	return nil
 }
 
+func decodeMapping(data []byte, target any) error {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("mapping file must contain exactly one YAML document")
+	}
+	return nil
+}
+
+// writeFile replaces an output only after the complete new file has been written.
+func writeFile(ctx context.Context, path string, data []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("create directory %s: %w", dir, err)
+	}
+	f, err := os.CreateTemp(dir, ".shinkrodb-*")
+	if err != nil {
+		return fmt.Errorf("create temporary output: %w", err)
+	}
+	defer os.Remove(f.Name())
+	defer f.Close()
+	if _, err := f.Write(data); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	if err := f.Chmod(0644); err != nil {
+		return fmt.Errorf("set output permissions: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("sync %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", path, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := os.Rename(f.Name(), path); err != nil {
+		return fmt.Errorf("replace %s: %w", path, err)
+	}
+	return nil
+}

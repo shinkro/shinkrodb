@@ -2,12 +2,9 @@ package mal
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"regexp"
-	"sort"
 	"strconv"
 	"time"
 
@@ -19,38 +16,35 @@ import (
 )
 
 type Service interface {
-	GetAnimeIDs(ctx context.Context, cacheRepo domain.CacheRepo) (int, error)
+	GetAnimeIDs(ctx context.Context, cacheRepo domain.CacheRepo, candidates ...domain.Anime) (int, error)
 	ScrapeAniDBIDs(ctx context.Context, cacheRepo domain.CacheRepo) error
 }
 
 type service struct {
-	log       zerolog.Logger
-	config    *domain.Config
-	animeRepo domain.AnimeRepository
-	malIDPath domain.AnimePath
-	anidbPath domain.AnimePath
+	log        zerolog.Logger
+	config     *domain.Config
+	animeRepo  domain.AnimeRepository
+	malIDPath  domain.AnimePath
+	anidbPath  domain.AnimePath
+	httpClient *http.Client
+	wait       func(context.Context, time.Duration) error
+}
+
+type malAnime struct {
+	ID                int    `json:"id"`
+	Title             string `json:"title"`
+	MediaType         string `json:"media_type"`
+	AlternativeTitles struct {
+		Synonyms []string `json:"synonyms"`
+		English  string   `json:"en"`
+		Japanese string   `json:"ja"`
+	} `json:"alternative_titles"`
+	StartDate string `json:"start_date"`
 }
 
 type MalResponse struct {
 	Data []struct {
-		Node struct {
-			ID          int    `json:"id"`
-			Title       string `json:"title"`
-			MainPicture struct {
-				Medium string `json:"medium"`
-				Large  string `json:"large"`
-			} `json:"main_picture"`
-			MediaType         string `json:"media_type"`
-			AlternativeTitles struct {
-				Synonyms []string `json:"synonyms"`
-				English  string   `json:"en"`
-				Japanese string   `json:"ja"`
-			} `json:"alternative_titles"`
-			StartDate string `json:"start_date"`
-		} `json:"node"`
-		Ranking struct {
-			Rank int `json:"rank"`
-		} `json:"ranking"`
+		Node malAnime `json:"node"`
 	} `json:"data"`
 	Paging struct {
 		Next string `json:"next"`
@@ -66,128 +60,20 @@ func (c *clientIDTransport) RoundTrip(req *http.Request) (*http.Response, error)
 	if c.Transport == nil {
 		c.Transport = http.DefaultTransport
 	}
-	req.Header.Add("X-MAL-CLIENT-ID", c.ClientID)
+	req.Header.Set("X-MAL-CLIENT-ID", c.ClientID)
 	return c.Transport.RoundTrip(req)
 }
 
 func NewService(log zerolog.Logger, config *domain.Config, animeRepo domain.AnimeRepository, malIDPath, anidbPath domain.AnimePath) Service {
 	return &service{
-		log:       log.With().Str("module", "mal").Logger(),
-		config:    config,
-		animeRepo: animeRepo,
-		malIDPath: malIDPath,
-		anidbPath: anidbPath,
+		log:        log.With().Str("module", "mal").Logger(),
+		config:     config,
+		animeRepo:  animeRepo,
+		malIDPath:  malIDPath,
+		anidbPath:  anidbPath,
+		httpClient: &http.Client{Timeout: 30 * time.Second, CheckRedirect: malRedirect},
+		wait:       waitForMAL,
 	}
-}
-
-func (s *service) GetAnimeIDs(ctx context.Context, cacheRepo domain.CacheRepo) (int, error) {
-	s.log.Info().Msg("Getting current ids from myanimelist..")
-	c := &http.Client{
-		Transport: &clientIDTransport{ClientID: s.config.MalClientID},
-	}
-
-	a := []domain.Anime{}
-	next, err := s.storeAnimeID(ctx, c, "https://api.myanimelist.net/v2/anime/ranking?ranking_type=all&limit=500&fields={media_type,start_date,alternative_titles}", &a)
-	if err != nil {
-		return 0, errors.Wrap(err, "failed to fetch initial MAL IDs")
-	}
-
-	for {
-		if next != "" {
-			next, err = s.storeAnimeID(ctx, c, next, &a)
-			if err != nil {
-				return 0, errors.Wrap(err, "failed to fetch MAL IDs")
-			}
-		} else {
-			break
-		}
-	}
-
-	// Merge with existing malid.json to preserve any IDs the API may have omitted.
-	// The MAL ranking API sometimes silently excludes entries, which would cause
-	// previously known IDs to disappear from all downstream files.
-	preserved := 0
-	existing, err := s.animeRepo.Get(ctx, s.malIDPath)
-	if err == nil && len(existing) > 0 {
-		newIDs := make(map[int]bool, len(a))
-		for _, anime := range a {
-			newIDs[anime.MalID] = true
-		}
-		for _, anime := range existing {
-			if !newIDs[anime.MalID] {
-				a = append(a, anime)
-				preserved++
-			}
-		}
-		if preserved > 0 {
-			s.log.Warn().Int("count", preserved).Msg("Preserved MAL IDs missing from API response")
-		}
-	}
-
-	sort.SliceStable(a, func(i, j int) bool {
-		return a[i].MalID < a[j].MalID
-	})
-
-	// Update mal_cache table with all MAL IDs
-	if cacheRepo != nil {
-		for _, anime := range a {
-			url := fmt.Sprintf("https://myanimelist.net/anime/%d", anime.MalID)
-			if err := cacheRepo.UpsertMAL(ctx, anime.MalID, url, anime.ReleaseDate, anime.Type); err != nil {
-				s.log.Warn().Err(err).Int("mal_id", anime.MalID).Msg("failed to update MAL cache")
-			}
-		}
-		s.log.Info().Int("count", len(a)).Msg("Updated mal_cache")
-	}
-
-	if err := s.animeRepo.Store(ctx, s.malIDPath, a); err != nil {
-		return 0, errors.Wrap(err, "failed to store MAL IDs")
-	}
-	s.log.Info().Str("path", string(s.malIDPath)).Msg("Stored malids")
-
-	return preserved, nil
-}
-
-func (s *service) storeAnimeID(ctx context.Context, c *http.Client, url string, a *[]domain.Anime) (string, error) {
-	mal := &MalResponse{}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return "", errors.Wrap(err, "failed to create request")
-	}
-
-	resp, err := c.Do(req)
-	if err != nil {
-		return "", errors.Wrap(err, "failed to fetch")
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("unexpected status code %d from %s", resp.StatusCode, url)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", errors.Wrap(err, "failed to read response body")
-	}
-
-	err = json.Unmarshal(body, mal)
-	if err != nil {
-		return "", errors.Wrap(err, "failed to unmarshal response")
-	}
-
-	for _, v := range mal.Data {
-		*a = append(*a, domain.Anime{
-			MainTitle:     v.Node.Title,
-			EnglishTitle:  v.Node.AlternativeTitles.English,
-			JapaneseTitle: v.Node.AlternativeTitles.Japanese,
-			Synonyms:      v.Node.AlternativeTitles.Synonyms,
-			MalID:         v.Node.ID,
-			Type:          v.Node.MediaType,
-			ReleaseDate:   v.Node.StartDate,
-		})
-	}
-
-	return mal.Paging.Next, nil
 }
 
 func (s *service) ScrapeAniDBIDs(ctx context.Context, cacheRepo domain.CacheRepo) error {
@@ -197,23 +83,17 @@ func (s *service) ScrapeAniDBIDs(ctx context.Context, cacheRepo domain.CacheRepo
 		return errors.Wrap(err, "failed to get anime list")
 	}
 
-	// Get all cached entries with AniDB IDs (regardless of release date)
-	// Entries with AniDB IDs are always valid
+	// Reuse positive cached links; --anidb=all still explicitly refreshes them.
 	cachedMalIDs := make(map[int]bool)
 	if cacheRepo != nil {
 		anidbMap, err := cacheRepo.GetAniDBIDs(ctx)
-		if err == nil {
-			for malID, anidbID := range anidbMap {
-				if anidbID > 0 {
-					cachedMalIDs[malID] = true
-					// Update anime list with cached AniDB ID
-					for i := range a {
-						if a[i].MalID == malID {
-							a[i].AnidbID = anidbID
-							break
-						}
-					}
-				}
+		if err != nil {
+			return errors.Wrap(err, "failed to read AniDB cache")
+		}
+		for i := range a {
+			if anidbID := anidbMap[a[i].MalID]; anidbID > 0 {
+				cachedMalIDs[a[i].MalID] = true
+				a[i].AnidbID = anidbID
 			}
 		}
 	}
@@ -242,6 +122,9 @@ func (s *service) ScrapeAniDBIDs(ctx context.Context, cacheRepo domain.CacheRepo
 	cc := colly.NewCollector(
 		colly.AllowedDomains("myanimelist.net"),
 	)
+	cc.WithTransport(contextTransport{ctx: ctx, base: s.httpClient.Transport})
+	cc.SetRequestTimeout(s.httpClient.Timeout)
+	var cacheErr error
 
 	extensions.RandomUserAgent(cc)
 
@@ -273,7 +156,7 @@ func (s *service) ScrapeAniDBIDs(ctx context.Context, cacheRepo domain.CacheRepo
 					// Note: mal_cache should only be updated in GetAnimeIDs, not here
 					if cacheRepo != nil {
 						if err := cacheRepo.UpsertAniDB(ctx, malID, anidbid); err != nil {
-							s.log.Warn().Err(err).Int("mal_id", malID).Msg("failed to update AniDB cache")
+							cacheErr = errors.Wrapf(err, "failed to cache AniDB ID for MAL %d", malID)
 						} else {
 							s.log.Debug().Int("mal_id", malID).Int("anidb_id", anidbid).Msg("Updated AniDB cache")
 						}
@@ -297,7 +180,15 @@ func (s *service) ScrapeAniDBIDs(ctx context.Context, cacheRepo domain.CacheRepo
 
 	// Only scrape entries not in cache
 	for _, v := range toScrape {
-		cc.Visit(fmt.Sprintf("https://myanimelist.net/anime/%d", v.MalID))
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := cc.Visit(fmt.Sprintf("https://myanimelist.net/anime/%d", v.MalID)); err != nil {
+			return errors.Wrapf(err, "failed to scrape MAL %d", v.MalID)
+		}
+		if cacheErr != nil {
+			return cacheErr
+		}
 	}
 
 	// Wait for scraping to complete
@@ -311,6 +202,20 @@ func (s *service) ScrapeAniDBIDs(ctx context.Context, cacheRepo domain.CacheRepo
 	}
 
 	return nil
+}
+
+// Colly does not attach our caller's context to requests itself.
+type contextTransport struct {
+	ctx  context.Context
+	base http.RoundTripper
+}
+
+func (t contextTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return base.RoundTrip(req.WithContext(t.ctx))
 }
 
 // filterAnimeToScrape filters anime list based on configured AniDB mode

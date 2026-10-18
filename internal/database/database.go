@@ -42,6 +42,7 @@ func NewDB(dir string, log zerolog.Logger) (*DB, error) {
 		"_pragma=journal_mode(WAL)",
 		// Default is FULL. Reducing this to NORMAL saves a significant amount of disk I/O (fsyncs).
 		"_pragma=synchronous(NORMAL)",
+		"_pragma=foreign_keys(1)",
 	}
 
 	pragmas := strings.Join(pragmaSlice, "&")
@@ -147,4 +148,3 @@ type Tx struct {
 	*sql.Tx
 	handler *DB
 }
-
