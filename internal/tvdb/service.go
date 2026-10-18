@@ -4,7 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
+	"reflect"
+	"sort"
 
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog"
@@ -17,18 +18,18 @@ type Service interface {
 }
 
 type service struct {
-	log        zerolog.Logger
-	animeRepo  domain.AnimeRepository
+	log         zerolog.Logger
+	animeRepo   domain.AnimeRepository
 	mappingRepo domain.MappingRepository
-	paths      *domain.Paths
+	paths       *domain.Paths
 }
 
 func NewService(log zerolog.Logger, animeRepo domain.AnimeRepository, mappingRepo domain.MappingRepository, paths *domain.Paths) Service {
 	return &service{
-		log:        log.With().Str("module", "tvdb").Logger(),
-		animeRepo:  animeRepo,
+		log:         log.With().Str("module", "tvdb").Logger(),
+		animeRepo:   animeRepo,
 		mappingRepo: mappingRepo,
-		paths:      paths,
+		paths:       paths,
 	}
 }
 
@@ -75,62 +76,52 @@ func (s *service) createAndUpdateMaster(ctx context.Context, rootPath string) er
 		return errors.Wrap(err, "failed to get anime list for mapping")
 	}
 
-	// Create unmapped TVDB map from anime data
-	unmapped := &domain.TVDBMap{}
-	for _, anime := range animeList {
-		unmapped.Anime = append(unmapped.Anime, domain.TVDBAnime{
-			Malid:        anime.MalID,
-			Title:        anime.MainTitle,
-			Type:         anime.Type,
-			Tvdbid:       0,
-			TvdbSeason:   0,
-			Start:        0,
-			UseMapping:   false,
-			AnimeMapping: []domain.AnimeMapping{},
-		})
-	}
-
-	// Store unmapped file
-	unmappedPath := filepath.Join(rootPath, "tvdb-mal-unmapped.yaml")
-	if err := s.mappingRepo.StoreTVDBMaster(ctx, unmappedPath, unmapped); err != nil {
-		return errors.Wrap(err, "failed to store unmapped map")
-	}
-
-	// Update master file
 	masterPath := filepath.Join(rootPath, "tvdb-mal-master.yaml")
 	master, err := s.mappingRepo.GetTVDBMaster(ctx, masterPath)
 	if err != nil {
-		// If master file doesn't exist, create it from unmapped (first run)
-		if errors.Is(err, os.ErrNotExist) || strings.Contains(err.Error(), "no such file or directory") || strings.Contains(err.Error(), "file does not exist") {
-			return s.mappingRepo.StoreTVDBMaster(ctx, masterPath, unmapped)
+		if !errors.Is(err, os.ErrNotExist) {
+			return errors.Wrap(err, "failed to get TVDB master")
 		}
-		return errors.Wrap(err, "failed to get TVDB master")
+		master = &domain.TVDBMap{}
 	}
 
-	// Merge master data into unmapped (preserve existing mappings)
-	masterMap := make(map[int]domain.TVDBAnime)
-	for _, v := range master.Anime {
-		if v.Tvdbid != 0 {
-			masterMap[v.Malid] = v
+	byMAL := make(map[int]domain.TVDBAnime)
+	active := make(map[int]bool, len(animeList))
+	for _, row := range master.Anime {
+		if previous, ok := byMAL[row.Malid]; ok && !reflect.DeepEqual(previous, row) {
+			return errors.Errorf("conflicting TVDB mappings for MAL %d", row.Malid)
+		}
+		byMAL[row.Malid] = row
+	}
+	for _, anime := range animeList {
+		active[anime.MalID] = true
+		row, exists := byMAL[anime.MalID]
+		if !exists {
+			row = domain.TVDBAnime{Malid: anime.MalID, AnimeMapping: []domain.AnimeMapping{}}
+		}
+		row.Title = anime.MainTitle
+		row.Type = anime.Type
+		byMAL[anime.MalID] = row
+	}
+	// Preserve mappings and in-progress rules even if an import omits an ID.
+	master = &domain.TVDBMap{}
+	for _, row := range byMAL {
+		master.Anime = append(master.Anime, row)
+	}
+	sort.Slice(master.Anime, func(i, j int) bool { return master.Anime[i].Malid < master.Anime[j].Malid })
+	unmapped := &domain.TVDBMap{}
+	for _, row := range master.Anime {
+		if row.Tvdbid == 0 && active[row.Malid] {
+			unmapped.Anime = append(unmapped.Anime, row)
 		}
 	}
-
-	for i, v := range unmapped.Anime {
-		if masterAnime, ok := masterMap[v.Malid]; ok {
-			unmapped.Anime[i].AnimeMapping = masterAnime.AnimeMapping
-			unmapped.Anime[i].Start = masterAnime.Start
-			unmapped.Anime[i].TvdbSeason = masterAnime.TvdbSeason
-			unmapped.Anime[i].Tvdbid = masterAnime.Tvdbid
-			unmapped.Anime[i].UseMapping = masterAnime.UseMapping
-		}
-	}
-
-	// Store updated master
-	if err := s.mappingRepo.StoreTVDBMaster(ctx, masterPath, unmapped); err != nil {
+	if err := s.mappingRepo.StoreTVDBMaster(ctx, masterPath, master); err != nil {
 		return errors.Wrap(err, "failed to store TVDB master")
+	}
+	if err := s.mappingRepo.StoreTVDBMaster(ctx, filepath.Join(rootPath, "tvdb-mal-unmapped.yaml"), unmapped); err != nil {
+		return errors.Wrap(err, "failed to store unmapped map")
 	}
 
 	s.log.Info().Msg("TVDB mapping master updated")
 	return nil
 }
-

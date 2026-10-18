@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/rs/zerolog"
@@ -21,15 +23,15 @@ import (
 
 // App represents the main application with all dependencies initialized
 type App struct {
-	log             zerolog.Logger
-	config          *domain.Config
-	paths           *domain.Paths
-	animeRepo       domain.AnimeRepository
-	mappingRepo     domain.MappingRepository
-	malService      mal.Service
-	tmdbService     tmdb.Service
-	tvdbService     tvdb.Service
-	dedupeService   dedupe.Service
+	log                 zerolog.Logger
+	config              *domain.Config
+	paths               *domain.Paths
+	animeRepo           domain.AnimeRepository
+	mappingRepo         domain.MappingRepository
+	malService          mal.Service
+	tmdbService         tmdb.Service
+	tvdbService         tvdb.Service
+	dedupeService       dedupe.Service
 	notificationService domain.NotificationService
 }
 
@@ -60,15 +62,15 @@ func NewApp() (*App, error) {
 	notificationService := notification.NewService(log, cfg.DiscordWebhookURL)
 
 	return &App{
-		log:                log,
-		config:             cfg,
-		paths:              paths,
-		animeRepo:          animeRepo,
-		mappingRepo:        mappingRepo,
-		malService:         malService,
-		tmdbService:        tmdbService,
-		tvdbService:        tvdbService,
-		dedupeService:      dedupeService,
+		log:                 log,
+		config:              cfg,
+		paths:               paths,
+		animeRepo:           animeRepo,
+		mappingRepo:         mappingRepo,
+		malService:          malService,
+		tmdbService:         tmdbService,
+		tvdbService:         tvdbService,
+		dedupeService:       dedupeService,
 		notificationService: notificationService,
 	}, nil
 }
@@ -78,12 +80,12 @@ func (a *App) Run(rootPath string) (err error) {
 	if a.config.MalClientID == "" {
 		return fmt.Errorf("mal_client_id is required (set via config.toml or SHINKRODB_MAL_CLIENT_ID environment variable)")
 	}
-	if a.config.TmdbApiKey == "" {
+	if a.config.TMDBMode != domain.FetchModeSkip && a.config.TmdbApiKey == "" {
 		return fmt.Errorf("tmdb_api_key is required (set via config.toml or SHINKRODB_TMDB_API_KEY environment variable)")
 	}
 
 	ctx := context.Background()
-	
+
 	// Send error notification if run fails
 	defer func() {
 		if err != nil {
@@ -111,13 +113,33 @@ func (a *App) Run(rootPath string) (err error) {
 
 	cacheRepo := database.NewCacheRepo(a.log, db)
 
+	// Verify contributor-supplied IDs even if discovery has never listed them.
+	candidates := []domain.Anime{}
+	tvMaster, err := a.mappingRepo.GetTVDBMaster(ctx, filepath.Join(rootPath, "tvdb-mal-master.yaml"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("failed to read TVDB candidates: %w", err)
+	}
+	if tvMaster != nil {
+		for _, row := range tvMaster.Anime {
+			candidates = append(candidates, domain.Anime{MalID: row.Malid, MainTitle: row.Title, Type: row.Type})
+		}
+	}
+	movieMaster, err := a.mappingRepo.GetTMDBMaster(ctx, filepath.Join(rootPath, "tmdb-mal-master.yaml"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("failed to read movie candidates: %w", err)
+	}
+	if movieMaster != nil {
+		for _, row := range movieMaster.AnimeMovie {
+			candidates = append(candidates, domain.Anime{MalID: row.MALID, MainTitle: row.MainTitle, Type: "movie"})
+		}
+	}
 	// Get MAL IDs and update mal_cache
-	preservedMALIDs, err := a.malService.GetAnimeIDs(ctx, cacheRepo)
+	preservedMALIDs, err := a.malService.GetAnimeIDs(ctx, cacheRepo, candidates...)
 	if err != nil {
 		return fmt.Errorf("failed to get MAL IDs: %w", err)
 	}
 
-	// Scrape MAL for AniDB IDs (cache invalidation happens implicitly - only entries < 1 year old are used)
+	// Scrape uncached MAL entries according to the selected AniDB fetch mode.
 	if err := a.malService.ScrapeAniDBIDs(ctx, cacheRepo); err != nil {
 		return fmt.Errorf("failed to scrape MAL: %w", err)
 	}
@@ -230,11 +252,43 @@ func (a *App) GenerateMappings(rootPath string) error {
 	if err != nil {
 		return fmt.Errorf("failed to get TMDB master: %w", err)
 	}
+	// Read both masters before replacing either generated map.
+	tvdb, err := a.mappingRepo.GetTVDBMaster(ctx, filepath.Join(rootPath, "tvdb-mal-master.yaml"))
+	if err != nil {
+		return fmt.Errorf("failed to get TVDB master: %w", err)
+	}
+	liveRows, err := a.animeRepo.Get(ctx, domain.NewPaths(rootPath).MalIDPath)
+	if err != nil {
+		return fmt.Errorf("failed to read active MAL catalogue: %w", err)
+	}
+	if len(liveRows) == 0 {
+		return fmt.Errorf("active MAL catalogue is empty")
+	}
+	live := make(map[int]bool, len(liveRows))
+	for _, row := range liveRows {
+		if row.MalID <= 0 {
+			return fmt.Errorf("active MAL catalogue contains an invalid MAL ID")
+		}
+		live[row.MalID] = true
+	}
+	// Preserve community history in masters, but never publish rules targeting a
+	// MAL ID whose absence was confirmed through the official detail endpoint.
+	unavailableRows, err := a.animeRepo.Get(ctx, domain.NewPaths(rootPath).MALUnavailablePath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("failed to read unavailable MAL IDs: %w", err)
+	}
+	unavailable := make(map[int]bool, len(unavailableRows))
+	for _, row := range unavailableRows {
+		if row.MalID <= 0 {
+			return fmt.Errorf("unavailable MAL catalogue contains an invalid MAL ID")
+		}
+		unavailable[row.MalID] = true
+	}
 
 	// Create filtered mapping (only entries with TMDB IDs)
 	filtered := &domain.AnimeMovies{}
 	for _, movie := range am.AnimeMovie {
-		if movie.TMDBID != 0 {
+		if movie.TMDBID > 0 && live[movie.MALID] && !unavailable[movie.MALID] {
 			filtered.AnimeMovie = append(filtered.AnimeMovie, movie)
 		}
 	}
@@ -243,16 +297,10 @@ func (a *App) GenerateMappings(rootPath string) error {
 		return fmt.Errorf("failed to create TMDB mapping: %w", err)
 	}
 
-	// Generate TVDB mapping
-	tvdb, err := a.mappingRepo.GetTVDBMaster(ctx, filepath.Join(rootPath, "tvdb-mal-master.yaml"))
-	if err != nil {
-		return fmt.Errorf("failed to get TVDB master: %w", err)
-	}
-
 	// Create filtered mapping (only entries with TVDB IDs)
 	filteredTVDB := &domain.TVDBMap{}
 	for _, anime := range tvdb.Anime {
-		if anime.Tvdbid != 0 {
+		if anime.Tvdbid > 0 && live[anime.Malid] && !unavailable[anime.Malid] {
 			filteredTVDB.Anime = append(filteredTVDB.Anime, anime)
 		}
 	}
